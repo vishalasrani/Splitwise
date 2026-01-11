@@ -65,13 +65,29 @@ class GroupCreateSerializer(serializers.ModelSerializer):
         # Add creator as a member
         GroupMember.objects.get_or_create(group=group, user=group.created_by)
         
-        # Add other members
-        for user_id in member_ids:
-            try:
-                user = User.objects.get(id=user_id)
-                GroupMember.objects.get_or_create(group=group, user=user)
-            except User.DoesNotExist:
-                pass  # Skip invalid user IDs
+        # Add other members - optimized to avoid N+1 queries
+        if member_ids:
+            # Fetch all valid users at once
+            users = User.objects.filter(id__in=member_ids)
+            valid_user_ids = set(users.values_list('id', flat=True))
+            
+            # Get existing group members to avoid duplicates
+            existing_members = GroupMember.objects.filter(
+                group=group,
+                user__id__in=valid_user_ids
+            ).values_list('user_id', flat=True)
+            existing_user_ids = set(existing_members)
+            
+            # Find users that need to be added (not already members)
+            new_user_ids = valid_user_ids - existing_user_ids
+            new_users = [user for user in users if user.id in new_user_ids]
+            
+            # Bulk create new group members
+            if new_users:
+                GroupMember.objects.bulk_create([
+                    GroupMember(group=group, user=user)
+                    for user in new_users
+                ])
         
         return group
 
